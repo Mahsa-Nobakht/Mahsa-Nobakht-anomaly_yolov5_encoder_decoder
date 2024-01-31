@@ -3,5 +3,6 @@
 
 python -c "
 from utils.google_utils import *;
-attempt_download('weights/yolov5x.pt')
+# attempt_download('weights/yolov5x.pt')
+
 "

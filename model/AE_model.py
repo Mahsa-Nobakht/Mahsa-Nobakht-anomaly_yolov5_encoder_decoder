@@ -1,164 +1,89 @@
-# %%
 import torch
 from torchsummary import summary
-from model.pytorch_ssim import SSIM
-import numpy as np
+import torch.nn as nn
 
-class SI_DAE(torch.nn.Module):
+class ConvAutoencoder(nn.Module):
     def __init__(self):
-        super(SI_DAE, self).__init__()
-        self.Encoder_conv1 = torch.nn.Sequential(
-            torch.nn.Conv2d(1, 64, 3, 1, 1),  
-            torch.nn.BatchNorm2d(64),
-            torch.nn.LeakyReLU(0.2))
-        self.Encoder_maxpool1 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-        self.Encoder_conv2 = torch.nn.Sequential(
-            torch.nn.Conv2d(64, 50, 3, 1, 1),  
-            torch.nn.BatchNorm2d(50),
-            torch.nn.LeakyReLU(0.2))
-        self.Encoder_maxpool2 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-        self.Encoder_conv3 = torch.nn.Sequential(
-            torch.nn.Conv2d(50, 36, 3, 1, 1),
-            torch.nn.BatchNorm2d(36),
-            torch.nn.LeakyReLU(0.2))
-        self.Encoder_maxpool3 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-        self.Encoder_conv4 = torch.nn.Sequential(
-            torch.nn.Conv2d(36,22, 3, 1, 1),  
-            torch.nn.BatchNorm2d(22),
-            torch.nn.LeakyReLU(0.2))
-        self.Encoder_maxpool4 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-        self.Encoder_conv5 = torch.nn.Sequential(
-            torch.nn.Conv2d(22, 8, 3, 1, 1),
-            torch.nn.BatchNorm2d(8),
-            torch.nn.Sigmoid())
-        self.Encoder_maxpool5 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
+        super(ConvAutoencoder, self).__init__()
+        # Encoder
+        # self.encoder = nn.Sequential(
+        #     nn.Conv2d(1, 512, kernel_size=3, stride=4),
+        #     nn.Tanh(),
+        #     nn.MaxPool2d(kernel_size=2, stride=2, return_indices=True),
+        #     nn.Conv2d(512, 256, kernel_size=3, stride=4),
+        #     nn.Tanh(),
+        #     nn.MaxPool2d(kernel_size=2, stride=2, return_indices=True),
+        #     nn.Conv2d(256, 128, kernel_size=3, stride=4),
+        #     nn.Tanh()
+        # )
+        # Encoder
+        self.conv1 = nn.Conv2d(1, 512, kernel_size=3, stride=4)
+        self.act1 = nn.Tanh()
+        self.maxpool1 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=True)
+        self.conv2 = nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1)
+        self.act2 = nn.Tanh()
+        self.maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2, return_indices=True)
+        self.conv3 = nn.Conv2d(256, 128, kernel_size=3, stride=1, padding=1)
+        self.act3 = nn.Tanh()
+
+        # # Decoder
+        # self.decoder = nn.Sequential(
+        #     nn.ConvTranspose2d(128, 256, kernel_size=3, stride=4),
+        #     nn.Tanh(),
+        #     nn.MaxUnpool2d(kernel_size=2, stride=2), 
+        #     nn.ConvTranspose2d(128, 256, kernel_size=3, stride=4),
+        #     nn.Tanh(),
+        #     nn.MaxUnpool2d(kernel_size=2, stride=2), 
+        #     nn.ConvTranspose2d(256, 512, kernel_size=3, stride=4),
+        #     nn.Sigmoid()
+        # )
+        # Decoder
+        self.unpool1 = nn.ConvTranspose2d(128, 128, kernel_size=3, stride=2)
+        self.act4 = nn.Tanh()
+        # self.maxunpool1 = nn.MaxUnpool2d(kernel_size=2, stride=2)  
+        self.deconv1 = nn.ConvTranspose2d(128, 256, kernel_size=3, stride=1,padding=1)  
+        self.act5 = nn.Tanh()  
+        self.unpool2 = nn.ConvTranspose2d(256, 512, kernel_size=3, stride=2)
+        self.act6 = nn.Tanh()
+        # self.maxunpool2 = nn.MaxUnpool2d(kernel_size=2, stride=2)
+        # self.maxunpool2 = nn.UpsamplingBilinear2d(scale_factor=2)   
+        self.deconv2 = nn.ConvTranspose2d(512, 1, kernel_size=3, stride=4, padding=0)
+        self.act7 = nn.Sigmoid()
+
+    def forward(self, input):
+        # x1 = input 
+        # # encoded, indices = self.encoder(x)
+        # x = self.encoder(input)
+        # x = self.decoder(x)
+        # return x, torch.nn.MSELoss()(x, input)
+    # Encoder
+        conv1_output = self.act1(self.conv1(input))
+        maxpool1_output, maxpool1_indices = self.maxpool1(conv1_output)
+        conv2_output = self.act2(self.conv2(maxpool1_output))
+        maxpool2_output, maxpool2_indices = self.maxpool2(conv2_output)
+        encoded = self.act3(self.conv3(maxpool2_output))
+
+        # Decoder
+        unpool1_output = self.act4(self.unpool1(encoded))
+        # unpool1_output = self.maxunpool1(deconv1_output, maxpool2_indices)
+        deconv1_output = self.act5(self.deconv1(unpool1_output))
+        unpool2_output = self.act6(self.unpool2(deconv1_output))
+        # unpool2_output = self.maxunpool2(deconv2_output, maxpool1_indices)
+        decoded = self.act7(self.deconv2(unpool2_output))
+
+        # decoded = self.act6(self.deconv3(unpool2_output))
         
-        self.Decoder_convtrans1 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(8, 22, 3, 1, 1),)
-        self.Decoder_maxunpool1=torch.nn.MaxUnpool2d(2,stride=2)
-        self.Decoder_convtrans2 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(22, 36, 3, 1, 1),)
-        self.Decoder_maxunpool2=torch.nn.MaxUnpool2d(2,stride=2)
-        self.Decoder_convtrans3 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(36, 50, 3, 1, 1),)
-        self.Decoder_maxunpool3=torch.nn.MaxUnpool2d(2,stride=2)
-        self.Decoder_convtrans4 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(50, 64, 3, 1, 1),)
-        self.Decoder_maxunpool4=torch.nn.MaxUnpool2d(2,stride=2)
-        self.Decoder_convtrans5 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(64, 1, 3, 1, 1),)
-        self.Decoder_maxunpool5=torch.nn.MaxUnpool2d(2,stride=2)
-         
-    def forward(self, inputs):
-        if self.training:
-            std=0.01
-        else:
-            std=0.0
-        noise=torch.tensor(np.random.normal(loc=0, scale=std, size=inputs.shape))
-        noise_inputs=inputs+noise.type(torch.FloatTensor).to(inputs.device)
-        x = self.Encoder_conv1(noise_inputs)
-        x , indices1 = self.Encoder_maxpool1(x)
-        x = self.Encoder_conv2(x)
-        x , indices2 = self.Encoder_maxpool2(x)
-        x = self.Encoder_conv3(x)
-        x , indices3 = self.Encoder_maxpool3(x)
-        x = self.Encoder_conv4(x)
-        x , indices4 = self.Encoder_maxpool4(x)
-        x = self.Encoder_conv5(x)
-        feature , indices5 = self.Encoder_maxpool5(x)
-        
-        x = self.Decoder_maxunpool1(feature,indices5)
-        x = self.Decoder_convtrans1(x)
-        x = self.Decoder_maxunpool2(x,indices4)
-        x = self.Decoder_convtrans2(x)
-        x = self.Decoder_maxunpool3(x,indices3)
-        x = self.Decoder_convtrans3(x)
-        x = self.Decoder_maxunpool4(x,indices2)
-        x = self.Decoder_convtrans4(x)
-        x = self.Decoder_maxunpool5(x,indices1)
-        x = self.Decoder_convtrans5(x)
-        return x,feature,torch.nn.MSELoss()(x,inputs),1-SSIM()(x,inputs)
-    
-class DI_DAE(torch.nn.Module):
-    def __init__(self):
-        super(DI_DAE, self).__init__()
-        self.Encoder_conv1 = torch.nn.Sequential(
-            torch.nn.Conv2d(1, 64, 3, 1, 1),  
-            torch.nn.BatchNorm2d(64),
-            torch.nn.LeakyReLU(0.2))
-        self.Encoder_maxpool1 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-        self.Encoder_conv2 = torch.nn.Sequential(
-            torch.nn.Conv2d(64, 50, 3, 1, 1),  
-            torch.nn.BatchNorm2d(50),
-            torch.nn.LeakyReLU(0.2))
-        self.Encoder_maxpool2 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-        self.Encoder_conv3 = torch.nn.Sequential(
-            torch.nn.Conv2d(50, 36, 3, 1, 1),
-            torch.nn.BatchNorm2d(36),
-            torch.nn.LeakyReLU(0.2))
-        self.Encoder_maxpool3 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-        self.Encoder_conv4 = torch.nn.Sequential(
-            torch.nn.Conv2d(36,22, 3, 1, 1),  
-            torch.nn.BatchNorm2d(22),
-            torch.nn.LeakyReLU(0.2))
-        self.Encoder_maxpool4 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-        self.Encoder_conv5 = torch.nn.Sequential(
-            torch.nn.Conv2d(22, 8, 3, 1, 1),
-            torch.nn.BatchNorm2d(8),
-            torch.nn.Sigmoid())
-        self.Encoder_maxpool5 = torch.nn.MaxPool2d(2, stride=2, return_indices=True)
-        
-        self.Decoder_convtrans1 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(8, 22, 3, 1, 1),)
-        self.Decoder_maxunpool1=torch.nn.MaxUnpool2d(2,stride=2)
-        self.Decoder_convtrans2 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(22, 36, 3, 1, 1),)
-        self.Decoder_maxunpool2=torch.nn.MaxUnpool2d(2,stride=2)
-        self.Decoder_convtrans3 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(36, 50, 3, 1, 1),)
-        self.Decoder_maxunpool3=torch.nn.MaxUnpool2d(2,stride=2)
-        self.Decoder_convtrans4 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(50, 64, 3, 1, 1),)
-        self.Decoder_maxunpool4=torch.nn.MaxUnpool2d(2,stride=2)
-        self.Decoder_convtrans5 = torch.nn.Sequential(
-            torch.nn.ConvTranspose2d(64, 1, 3, 1, 1),)
-        self.Decoder_maxunpool5=torch.nn.MaxUnpool2d(2,stride=2)
-        
-    def forward(self, inputs):
-        if self.training:
-            std=0.01
-        else:
-            std=0.0
-        noise=torch.tensor(np.random.normal(loc=0, scale=std, size=inputs.shape))
-        noise_inputs=inputs+noise.type(torch.FloatTensor).to(inputs.device)
-        x = self.Encoder_conv1(noise_inputs)
-        x , indices1 = self.Encoder_maxpool1(x)
-        x = self.Encoder_conv2(x)
-        x , indices2 = self.Encoder_maxpool2(x)
-        x = self.Encoder_conv3(x)
-        x , indices3 = self.Encoder_maxpool3(x)
-        x = self.Encoder_conv4(x)
-        x , indices4 = self.Encoder_maxpool4(x)
-        x = self.Encoder_conv5(x)
-        feature , indices5 = self.Encoder_maxpool5(x)
-        
-        x = self.Decoder_maxunpool1(feature,indices5)
-        x = self.Decoder_convtrans1(x)
-        x = self.Decoder_maxunpool2(x,indices4)
-        x = self.Decoder_convtrans2(x)
-        x = self.Decoder_maxunpool3(x,indices3)
-        x = self.Decoder_convtrans3(x)
-        x = self.Decoder_maxunpool4(x,indices2)
-        x = self.Decoder_convtrans4(x)
-        x = self.Decoder_maxunpool5(x,indices1)
-        x = self.Decoder_convtrans5(x)
-        return x,feature,torch.nn.MSELoss()(x,inputs),1-SSIM()(x,inputs)
-# %%
+
+        return decoded, torch.nn.MSELoss()(decoded, input)
+        # return decoded
+    # def forward(self, input):
+    #     x, indices1, indices2, indices3 = self.encoder(input)  # Return indices from the encoder
+    #     x = self.decoder(x, (indices3, indices2, indices1))  # Pass indices to the decoder
+    #     return x, torch.nn.MSELoss()(x, input)
+
 if __name__ == '__main__':
-    device="cuda"
-    AE = SI_DAE().to(device).eval()
-    img=torch.ones((10,1,64,64)).to(device)
-    x,feature,mse,ssim=AE(img)
-    summary(AE,input_size=(1,64,64))
-    
-# %%
+    device = "cuda"
+    autoencoder = ConvAutoencoder().to(device).eval()
+    img = torch.ones((10, 1, 192, 320)).to(device)  # Adjust input size as needed
+    x = autoencoder(img)
+    summary(autoencoder, input_size=(1, 192, 320))

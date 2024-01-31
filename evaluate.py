@@ -4,32 +4,18 @@ import numpy as np
 import torch.backends.cudnn as cudnn
 from torchvision import transforms as T
 from torchvision import utils
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_curve, auc, roc_auc_score
 from scipy.stats import multivariate_normal
+from dataset import DAEDataset
 
+import matplotlib.pyplot as plt
+# import matplotlib.image as mpimg
 sys.path.append('pytorch_yolov5/')
-from models.experimental import *
-from utils.datasets import *
-from utils.utils import *
+# from pytorch_yolov5.models.experimental import *
+# from pytorch_yolov5.utils.datasets import *
+# from pytorch_yolov5.utils.utils import *
+from pytorch_yolov5.utils.torch_utils import select_device, time_synchronized
 
-def ae_preprocess(img_cv2):
-    img_PIL=Image.fromarray(cv2.cvtColor(img_cv2,cv2.COLOR_BGR2RGB))
-    img=img_PIL.convert('L')
-    temp=int((img.size[1]-img.size[0])/2)
-    arround=0
-    pad=(temp+arround,0+arround) if temp>=0 else (0+arround,arround-temp)
-    transform=T.Compose([T.Pad(pad,fill=0), T.Resize((64,64), Image.ANTIALIAS),
-                            T.ToTensor(),T.Normalize(mean=0.5,std=0.5)])
-    img_PIL=transform(img)
-    img_tensor=img_PIL[np.newaxis,:]
-    return img_tensor.to('cuda')
-
-def calcu_proba(theta,test_x):
-    k=theta["pi"].shape[0]
-    q = np.zeros((k, 1))
-    for i in range(k):
-        q[i, :] = theta['pi'][i]*multivariate_normal.pdf(test_x,mean=theta['miu'][i],cov=theta['sigma'][i, ...])
-    return np.log(1e-5+q.sum())
 
 def detect(save_img=False):    
     out, source, weights, view_img, save_txt, imgsz = \
@@ -39,183 +25,191 @@ def detect(save_img=False):
     # Initialize
     sample_path="output/test_samples"
     os.makedirs(sample_path,exist_ok=True)
-    device = torch_utils.select_device(opt.device)
-    half = device.type != 'cpu'  # half precision only supported on CUDA
-    simg_dae_model = torch.load(opt.SIDAE_ckpt,map_location="cuda")
-    simg_dae_model = simg_dae_model.to('cuda')
-    simg_dae_model.eval()
-    dimg_dae_model = torch.load(opt.DIDAE_ckpt,map_location="cuda")
-    dimg_dae_model = dimg_dae_model.to('cuda')
-    dimg_dae_model.eval()
-    with open(r"output/pkl/img_GmmTheta.pkl", "rb") as f:    
-        img_theta=pickle.load(f)
-    with open(r"output/pkl/dimg_GmmTheta.pkl", "rb") as f:    
-        dimg_theta=pickle.load(f)
-    # Load model
-    model = attempt_load(weights, map_location=device)  # load FP32 model
-    imgsz = check_img_size(imgsz, s=model.stride.max())  # check img_size
-    if half:
-        model.half()  # to FP16
+    # device = torch_utils.select_device(opt.device)
+    device = select_device(opt.device)
+    # half = device.type != 'cpu'  # half precision only supported on CUDA
+    # load model
+    ae_model = torch.load(opt.DAE_ckpt,map_location="cuda")
+    ae_model = ae_model.to('cuda')
+    ae_model.eval()
 
-    # Second-stage classifier
-    classify = False
-    if classify:
-        modelc = torch_utils.load_classifier(name='resnet101', n=2)  # initialize
-        modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model'])  # load weights
-        modelc.to(device).eval()
 
-    # Set Dataloader
-    vid_path, vid_writer = None, None
-    if webcam:
-        view_img = True
-        cudnn.benchmark = True  # set True to speed up constant image size inference
-        dataset = LoadStreams(source, img_size=imgsz)
-    else:
-        save_img = True
-        dataset = LoadImages(source, img_size=imgsz)
+    dataset = DAEDataset(source)
 
-    # Get names and colors
-    names = model.module.names if hasattr(model, 'module') else model.names
-    colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(names))]
 
-    # Run inference
-    MSE_FEA_List=[]
-    SI_feature=[]
-    DI_feature=[]
+    # frames_folder = source
+    # # Path to the folder containing frames
+    # frames_folder = 'path_to_frames_folder'
+
+    # # Get a list of all frame files in the folder
+    # frame_files = [f for f in os.listdir(frames_folder) if os.path.isfile(os.path.join(frames_folder, f))]
+
+    # Get a list of all frame files in the folder
+    # frame_files = [f for f in os.listdir(frames_folder) if os.path.isfile(os.path.join(frames_folder, f))]
+    anomaly_flag_list = []  # Create a list to store anomaly flags for each frame
+
+    # Loop through each frame file
+    # for frame_file in frame_files:
+    #     # Read the frame
+    #     frame_path = os.path.join(frames_folder, frame_file)
+    #     frame = cv2.imread(frame_path)
+
+        # Resize frame to 219x219
+        # resized_frame = cv2.resize(frame, (219, 219))
+    
+    frame_index_list = []  # Added to store frame indices
+    reg_score_list = []  # Added to store regularity scores
+        
     t0 = time.time()
     img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
-    _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once
-    for path, img, im0s, vid_cap in dataset:
-        img = torch.from_numpy(img).to(device)
-        img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+    loss_dae = []
+    # _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once
+    # for path, img, im0s, vid_cap in dataset:
+    for i, img in enumerate(dataset):
+    # for img in frame_files:
+        # img = torch.from_numpy(img).to(device)
+        img = img.to(device)
+        # img = img.half() if half else img.float()  # uint8 to fp16/32
+        img = img.float()
+        # img /= 255.0  # 0 - 255 to 0.0 - 1.0
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
 
         # Inference
-        t1 = torch_utils.time_synchronized()
-        pred = model(img, augment=opt.augment)[0]
+        # t1 = torch_utils.time_synchronized()
+        reg_score = torch.zeros(img.size(0)) # shape (N)
+        anomaly_flag = torch.zeros(img.size(0)) # shape (N)
+        frame_index = torch.arange(img.size(0)) # shape (N)
+        # t1 = time_sync()
+        # pred = model(img, augment=opt.augment)[0]
+        pred, loss = ae_model(img)
+        # Sum over the channels, height, and width dimensions
+        # loss = loss.sum()
+        loss_dae.append(loss)
 
-        # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
-        t2 = torch_utils.time_synchronized()
+        # Normalize the error to get the regularity score
+        # reg_score[i] = 1 - loss
+        reg_score = loss 
 
-        # Apply Classifier
-        if classify:
-            pred = apply_classifier(pred, modelc, img, im0s)
+        frame_index_list.append(i)
+        reg_score_list.append(reg_score.cpu().item())  # Move to CPU before storing
 
-        # Process detections
-        for i, det in enumerate(pred):  # detections per image
-            if webcam:  # batch_size >= 1
-                p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
-            else:
-                p, s, im0 = path, '', im0s
+        # Set the anomaly flag to 1 if the regularity score is below a threshold
+        # if reg_score[i] < 0.5:
+        #     anomaly_flag[i] = 1
 
-            save_path = str(Path(out) / Path(p).name)
-            txt_path = str(Path(out) / Path(p).stem) + ('_%g' % dataset.frame if dataset.mode == 'video' else '')
-            s += '%gx%g ' % img.shape[2:]  # print string
-            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+        # if reg_score < 0.5:
+        #     anomaly_flag = 1
+        anomaly_flag_list.append(1 if reg_score < 0.5 else 0)
 
-            Dimg=cv2.imread(os.path.join(os.path.dirname(opt.source),"Dimg",Path(p).name))
-            total_ae_time=0.0
-            if det is not None and len(det):
-                # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+    reg_score_list = np.array(reg_score_list)  # Convert to NumPy array
 
-                # Print results
-                for c in det[:, -1].unique():
-                    n = (det[:, -1] == c).sum()  # detections per class
-                    s += '%g %ss, ' % (n, names[int(c)])  # add to string
+    anomaly_threshold = 0.4
+    anomaly_indices = np.where(reg_score_list > anomaly_threshold)[0]
+    # Plot the regularity score as a line plot
+    plt.plot(frame_index_list, reg_score_list, color='blue')
+    plt.ylim(0, 1)
+    # Plot the red bound around the line
+    # plt.fill_between(frame_index_list, reg_score_list - 0.05, reg_score_list + 0.05, color='red', alpha=0.5)
+    # Plot the pink shaded area where the anomaly flag is 1
+    plt.fill_between(frame_index_list, 0, 1, where=np.array(anomaly_flag_list) == 1, color='pink', alpha=0.5)
+    # plt.scatter(frame_index_list[anomaly_indices], reg_score_list[anomaly_indices], color='red', marker='o', label='Anomaly > 40%')
+    # plt.scatter(frame_index_list[anomaly_indices.astype(int)], reg_score_list[anomaly_indices.astype(int)], color='red', marker='o', label='Anomaly > 40%')
 
-                # Write results
-                patch_index=0
-                total_ae_time=time.time()
-                psnr1=[]
-                psnr2=[]
-                likelihood1=[]
-                likelihood2=[]
-                for *xyxy, conf, cls in det:
-                    patch_index+=1
-                    label = '%s %.2f' % (names[int(cls)], conf)
-                    img_name=Path(p).name[0:-4]+"_patch{}.jpg".format(patch_index)
-                    xmin,ymin,xmax,ymax = (int(xyxy[0]), int(xyxy[1]),int(xyxy[2]), int(xyxy[3]))
-                    if (xmax-xmin)*(ymax-ymin)> opt.min_boxsize:
-                        img_in=ae_preprocess(im0[ymin:ymax,xmin:xmax,:])
-                        dimg_in=ae_preprocess(Dimg[ymin:ymax,xmin:xmax,:])
-                        recon1,fea1,mse1,_=simg_dae_model(img_in)
-                        recon2,fea2,mse2,_=dimg_dae_model(dimg_in)
-                        psnr1.append(10*np.log10(255/mse1.item()))
-                        psnr2.append(10*np.log10(255/mse2.item()))
-                        likelihood1.append(calcu_proba(img_theta,fea1.flatten().cpu()))
-                        likelihood2.append(calcu_proba(dimg_theta,fea2.flatten().cpu()))
-                        SI_feature.append(np.array(fea1.flatten().cpu()))
-                        DI_feature.append(np.array(fea1.flatten().cpu()))
-                        if names[int(cls)] != "person" or conf<=0.4:
-                            utils.save_image(torch.cat([img_in, recon1,dimg_in,recon2], 0),
-                            os.path.join(sample_path,"{}|{:.1f}|{:.1f}|{:.1f}|{:.1f}.jpg".format(Path(p).name[0:-4],psnr1[-1],psnr2[-1],likelihood1[-1],likelihood2[-1])),
-                            nrow=1,
-                            normalize=True,
-                            range=(-1, 1),)
-                MSE_FEA_List.append([psnr1,psnr2,likelihood1,likelihood2])
-                total_ae_time=time.time()-total_ae_time
-            else:
-                MSE_FEA_List.append([[],None,None,None])
-            # Print time (inference + NMS)
-            print('%sDone.(detect: %.3fs),(total dae: %.3fs).' % (s,t2-t1,total_ae_time))
+    # Set the x-axis and y-axis labels
+    plt.xlabel('Frame index')
+    plt.ylabel('Regularity score')
+    # # Add the images and the red box to the plot
+    # You can adjust the position and size of the images and the box as you like
+    # Here we use the first and the last frames as examples
+    # plt.annotate('', xy=(0, 0.5), xytext=(200, 0.5), arrowprops=dict(arrowstyle='->', connectionstyle='arc3'))
+    # plt.imshow(img[0].cpu().permute(1, 2, 0), extent=(200, 400, 0, 0.5))
+    # plt.annotate('', xy=(1000, 0.5), xytext=(800, 0.5), arrowprops=dict(arrowstyle='->', connectionstyle='arc3'))
+    # plt.imshow(img[-1].cpu().permute(1, 2, 0), extent=(800, 1000, 0, 0.5))
+    # plt.plot([900, 950], [0.1, 0.1], color='red', linewidth=3)
+    # plt.plot([900, 950], [0.4, 0.4], color='red', linewidth=3)
+    # plt.plot([900, 900], [0.1, 0.4], color='red', linewidth=3)
+    # plt.plot([950, 950], [0.1, 0.4], color='red', linewidth=3)
+    # Save the plot as an image file
+    plt.savefig('reg_score_plot.png')
+    # while True:
+    #     cv2.imshow("Prediction", pred[0])
+    #     cv2.waitKey(0)
+    #     sys.exit()
+    # cv2.destroyAllWindows()
+    # img = img[0].cpu().numpy()
+    # img = np.transpose(img, (1, 2, 0))  # Change from (C, H, W) to (H, W, C)
+    # plt.imshow(img[10])
+    # plt.title('MoG')
+            
+    plt.show()   
+
 
     print('Done. (%.3fs)' % (time.time() - t0))
-    return MSE_FEA_List,SI_feature,DI_feature
 
-def moving_avg(X,belta=0.25):
-    Y=X.copy()
-    for i in range(X.shape[0]):
-        if i >= 1:
-            Y[i]=belta*Y[i]+(1-belta)*Y[i-1]
-        else:
-            pass
-    return Y
+    # return loss_dae, img
 
-def calculate_AUROC(MSE_FEA_List,score_lambda,ground_th,use_slide_avg=False):
-    prediction=[]
-    for (psnr1,psnr2,likelihood1,likelihood2) in MSE_FEA_List:
-        max_score=-50
-        for i in range(len(psnr1)):
-            score=100-np.dot(np.array([psnr1[i],psnr2[i],likelihood1[i],likelihood2[i]]),score_lambda)
-            if score>max_score:
-                max_score=score
-        prediction.append(max_score)
-    prediction=np.array(prediction)
-    if use_slide_avg:
-        prediction=moving_avg(prediction)
-    prediction-=np.min(prediction)
-    prediction/=max(1e-5,np.max(prediction))
+# def process_video_or_images(video_or_images_path, output_folder, ae_model):
+#     frames = []
     
-    return roc_auc_score(ground_th,prediction), prediction
+#     if video_or_images_path.endswith('.mp4') or video_or_images_path.endswith('.avi'):
+#         cap = cv2.VideoCapture(video_or_images_path)
+#         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+#         for _ in range(frame_count):
+#             ret, frame = cap.read()
+#             if not ret:
+#                 break
+#             frames.append(frame)
+#         cap.release()
+#     else:
+#         frame_files = [f for f in os.listdir(video_or_images_path) if os.path.isfile(os.path.join(video_or_images_path, f))]
+#         for frame_file in frame_files:
+#             frame_path = os.path.join(video_or_images_path, frame_file)
+#             frame = cv2.imread(frame_path)
+#             frames.append(frame)
 
-def grid_search(MSE_FEA_List,ground_th,search_step_size=0.1):
-    max_lambda=None
-    max_roc=-50
-    prediction=None
-    for i in range(int(1/search_step_size)+1):
-        lambda1=search_step_size*i
-        for j in range(int((1-lambda1)/search_step_size)+1):
-            lambda2=search_step_size*j
-            for k in range(int((1-lambda1-lambda2)/search_step_size)+1):
-                lambda3=search_step_size*k
-                lambda4=1-lambda1-lambda2-lambda3
-                temp=np.array([lambda1,lambda2,lambda3,lambda4])
-                roc, prediction=calculate_AUROC(MSE_FEA_List,temp,ground_th)
-                if max_roc<roc:
-                    max_roc=roc
-                    max_lambda=temp
-    return max_roc,max_lambda,prediction
+    
+#     # Autoencoder
+#     anomaly_scores, _ = detect(frames, ae_model)
+    
+#     # Display or save in Output folder
+#     if output_folder:
+#         os.makedirs(output_folder, exist_ok=True)
+#         for i, frame in enumerate(frames):
+#             
+#             frame_with_mog = cv2.bitwise_and(frame, frame, mask=binary_masks[i])
+            
+#             cv2.imwrite(os.path.join(output_folder, f'frame_{i}_score_{anomaly_scores[i]:.4f}.png'), frame_with_mog)
+#     else:
+#         # Display results
+#         for i, frame in enumerate(frames):
+#             cv2.imshow('Frame with MOG Mask', cv2.bitwise_and(frame, frame, mask=binary_masks[i]))
+#             print(f'Frame {i} - Anomaly Score: {anomaly_scores[i]}')
+#             cv2.waitKey(0)
+#         cv2.destroyAllWindows()
+
+
+# def calculate_AUC(labels, predictions):
+#     ground_truth = np.zeros(predictions.shape[0])
+#     for anomalous_frames in labels:
+#         ground_truth[anomalous_frames] = 1
+    
+#     auc_score = roc_auc_score(ground_truth, predictions)
+#     return auc_score
+
+# def plot_anomaly_scores(anomaly_scores):
+#     plt.plot(range(len(anomaly_scores)), anomaly_scores, color='blue', lw=2)
+#     plt.xlabel('Frame Number')
+#     plt.ylabel('Anomaly Score')
+#     plt.title('Anomaly Score over Frames')
+#     plt.show()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default='pytorch_yolov5/weights/yolov5l.pt', help='model.pt path(s)')
-    parser.add_argument('--SIDAE_ckpt', type=str, default='output/checkpoint/train_img_100.pt')
-    parser.add_argument('--DIDAE_ckpt', type=str, default='output/checkpoint/train_dimg_100.pt')
-    parser.add_argument('--source', type=str, default='dataset/ped2/test/Img', help='source')  # file/folder, 0 for webcam
+    parser.add_argument('--DAE_ckpt', type=str, default='/home/mahsa/gmm_dae/output/checkpoint/ped1/Train_img_50.pt')
+    # parser.add_argument('--DIDAE_ckpt', type=str, default='output/checkpoint/train_dimg_100.pt')
+    parser.add_argument('--source', type=str, default='/home/mahsa/gmm_dae/dataset/UCSD_Anomaly_Dataset.v1p2/UCSDped1/Test/Test003', help='source')  # file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='output/pkl', help='output folder')  # output folder
     parser.add_argument('--img-size', type=int, default=480, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.3, help='object confidence threshold')
@@ -231,20 +225,81 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     os.makedirs(opt.output, exist_ok=True)
     with torch.no_grad():
-        MSE_FEA_List,SI_fea,DI_fea = detect()
-    with open(os.path.join(opt.output,"MSE_FEA_List.pkl"), "wb") as f:   
-        pickle.dump(MSE_FEA_List, f)
-    with open(os.path.join(opt.output,"SI_FEATURE.pkl"), "wb") as f:   
-        pickle.dump(SI_fea, f)
-    with open(os.path.join(opt.output,"DI_FEATURE.pkl"), "wb") as f:   
-        pickle.dump(DI_fea, f)
-    arr=np.load('dataset/frame_labels_ped2.npy')
-    ground_th=arr[0]
+        # MSE_FEA_List,SI_fea,DI_fea = detect()
+        # Loss, img = detect()
+        detect()
+    # Loss_np = np.array(Loss)
+    # Loss_np = np.array([item.cpu().numpy() for item in Loss])
 
-    print("SI+DAE AUROC: ",calculate_AUROC(MSE_FEA_List,np.array([1,0,0,0]),ground_th)[0])
-    print("DI+DAE AUROC: ",calculate_AUROC(MSE_FEA_List,np.array([0,1,0,0]),ground_th)[0])
-    print("SI+GMM AUROC: ",calculate_AUROC(MSE_FEA_List,np.array([0,0,1,0]),ground_th)[0])
-    print("DI+GMM AUROC: ",calculate_AUROC(MSE_FEA_List,np.array([0,0,0,1]),ground_th)[0])
-    max_roc,best_lambda,prediction=grid_search(MSE_FEA_List,ground_th)
-    print("max AUROC:",max_roc,"; best lambda:",'[ %.3f , %.3f , %.3f , %.3f ]'%(best_lambda[0],best_lambda[1],best_lambda[2],best_lambda[3]))
-    print("max AUROC after filter: ",calculate_AUROC(MSE_FEA_List,best_lambda,ground_th,use_slide_avg=True)[0])
+    # print("img shape:", img.shape, "img type:", type(img))
+    # print("Loss shape:", Loss_np.shape, "Loss type:", type(Loss_np))
+
+    # video_or_images_path = 'path/to/your/video_or_images_folder_or_file'
+    # output_folder = 'path/to/your/output_folder'
+    # process_video_or_images(video_or_images_path, output_folder, ae_model)
+
+    
+    # labels = np.load('path/to/your/ground_truth.npy')  
+    # auc_score = calculate_AUC(labels, anomaly_scores)
+    # print(f'AUC Score: {auc_score}')
+
+    # plot_anomaly_scores(anomaly_scores)
+
+    # mean_loss = np.mean(Loss)
+    # std_loss = np.std(Loss)
+    # threshold = mean_loss + 2 * std_loss
+    # if len(Loss) > 0:
+    #     # mean_loss = np.mean(Loss)
+    #     mean_loss = np.mean([item.cpu().numpy() for item in Loss])
+
+    #     # std_loss = np.std(Loss)
+    #     std_loss = np.std([item.cpu().numpy() for item in Loss])
+    #     threshold = mean_loss + 2 * std_loss
+    #     anomalous_frames = [1 if error > threshold else 0 for error in Loss]
+    # else:
+    #     print("No losses recorded during detection.")
+
+    # # arr=np.load('dataset/frame_labels_ped2.npy')
+    # # ground_th=arr[0]
+    # if sum(anomalous_frames) == 0:
+    #     print("No anomalies in the ground truth.")
+    # else:
+    #     # Calculate AUC
+    #     fpr, tpr, thresholds = roc_curve(anomalous_frames, Loss_np)
+    #     roc_auc = auc(fpr, tpr)
+    #     print("DEA AUC: ", roc_auc)
+
+
+
+
+    # # Calculate Anomaly Score based on reconstruction errors
+    # anomaly_scores = []  # Store anomaly scores for each frame
+    # for error in reconstruction_errors:
+    #     anomaly_score = 1 - (error / max_error)  # Normalize error to [0, 1] range
+    #     anomaly_scores.append(anomaly_score)
+
+    # # Create a plot of Anomaly Score
+    # plt.plot(range(len(anomaly_scores)), anomaly_scores, color='blue', lw=2)
+    # plt.xlabel('Frame Number')
+    # plt.ylabel('Anomaly Score')
+    # plt.title('Anomaly Score over Frames')
+    # plt.show()
+
+
+    # anomalous_frames = [1 if error > threshold else 0 for error in Loss_np]
+    # fpr, tpr, thresholds = roc_curve(anomalous_frames, Loss_np)
+    # fpr, tpr, thresholds = roc_curve(img.cpu().numpy(), [l.cpu().numpy() for l in Loss])
+    # fpr, tpr, thresholds = roc_curve(anomalous_frames.cpu().numpy(), [l.cpu().numpy() for l in Loss])
+
+    # roc_auc = auc(fpr, tpr)
+
+
+# # Define a threshold for pixel-level anomaly detection (at least 40% of pixels being anomalous)
+# threshold_percentage = 0.4  # Set the desired percentage (40% in this case)
+# anomaly_mask = (error_map > threshold).astype(np.uint8)
+
+# # Check if at least 40% of pixels are anomalous
+# if np.mean(anomaly_mask) > threshold_percentage:
+#     anomaly_pixel_map = cv2.bitwise_or(anomaly_pixel_map, anomaly_mask)
+
+
